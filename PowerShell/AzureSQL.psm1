@@ -98,3 +98,64 @@ function ConvertTo-EscapedString {
         -replace '\&', '^^^&' `
         -replace '\)', '^^^)'
 }
+
+function Set-AzureFuncionApp {
+    param(
+        # The generic name to use for all related assets
+        [Parameter(Mandatory)]
+        [string]
+        $Name,
+
+        [Parameter(Mandatory)]
+        [string]
+        $ResourceGroup,
+    
+        # The location to create the asset in
+        [Parameter(Mandatory)]
+        [string]
+        $Location,
+    
+        # The path to the deployment package
+        [Parameter(Mandatory)]
+        [string]
+        $DeploymentPackage,
+    
+        # The application Settings
+        $AppSettings = @{ },
+
+        $ConnectionStrings = @(),
+    
+        # The allowed origins for Cross Origin Request Sharing (CORS)
+        [string[]]
+        $AllowedOrigins = @()
+    )
+    Write-Information -Message:"Deploying source for $Name function app"
+    az functionapp deployment source config-zip --resource-group $ResourceGroup --name $Name --src $DeploymentPackage | Out-Null
+
+    Write-Information -Message:"Configure $Name function app CORS"
+    $AllowedOrigins | ForEach-Object {
+        $origin = $PSItem
+        $ExistOrigin = az functionapp cors show --resource-group $ResourceGroup --name $Name --query "allowedOrigins | [?contains(@, '$origin')]" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+
+        if (-not $ExistOrigin) {
+            Write-Information -Message:"Adding the $Name CORS Value $origin"
+            az functionapp cors add --name $Name --resource-group $ResourceGroup --allowed-origins $origin | Out-Null
+        }
+    }
+
+    Write-Information -Message:"Configure $Name function app settings"
+    $AppSettings.Keys | ForEach-Object {
+        $Key = $PSItem
+        $Value = $AppSettings."$Key"
+        Write-Information -Message:"Configure $Key function app settings"
+        az functionapp config appsettings set --name $name --settings $Key=$Value --resource-group $ResourceGroup | Out-Null
+    }
+
+    Write-Information -Message:"Configure $Name function ConnectionStrings"
+    $ConnectionStrings | ForEach-Object {
+        $connectionString = $PSItem
+        Write-Information -Message:"Configure $($PSItem.Name) function app settings"
+        az webapp config connection-string set --resource-group $ResourceGroup --name $Name --connection-string-type $connectionString.Type --settings "$($connectionString.Name)=$($connectionString.Value)" | Out-Null
+    }
+
+}

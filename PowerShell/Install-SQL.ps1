@@ -22,21 +22,28 @@ $SQLAdminPassword = "$($Parameters.SQLDatabase.Password)"
 $SQLDatabase = "$($Parameters.SQLDatabase.DatabaseName)"
 $SQLAdminAppPrincipalName = "$($Parameters.SQLDatabase.SQLAdminAppPrincipalName)"
 $SQLAdminADGroup = "$($Parameters.SQLDatabase.SQLAdminADGroup)"
-
+$location = "uksouth"
 Write-Information -MessageData:"Log into the Azure Tenancy"
 az login
 az account set --subscription "$($Parameters.AzureSubscription)"
-az configure --defaults location=uksouth
+az configure --defaults location=$location
 
 Write-Information -MessageData:"Creating the $Identity resource group."
 az group create --name $Identity | Out-Null
+
+#Create a Storage Account
+Write-Information -MessageData:"Creating the $StorageAccountName storage account."
+az storage account create --resource-group $Identity --name $StorageAccountName --access-tier "Cool" --sku "Standard_LRS" --kind "StorageV2" --https-only $true | Out-Null
+
+
+
 
 #SQL Admin User Principal Account
 Write-Information -MessageData:"Getting the $SQLAdminAppPrincipalName Service Principal registration."
 $SqlSPRegistration = az ad sp list --all --query "[?displayName == '$SQLAdminAppPrincipalName']" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json | Select-Object -First 1
 if (-not $SqlSPRegistration) {
     Write-Information -MessageData:"Creating the $SQLAdminAppPrincipalName SP Registration."
-    az ad sp create-for-rbac --name "$SQLAdminAppPrincipalName" | Out-Null
+    az ad sp create-for-rbac --name "http://$SQLAdminAppPrincipalName" | Out-Null
     $SqlSPRegistration = az ad sp list --all --query "[?displayName == '$SQLAdminAppPrincipalName']" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json | Select-Object -First 1
 }
 
@@ -106,5 +113,69 @@ $SPNToken = Get-AADToken -TenantID $subscription.tenantId -ServicePrincipalId $S
 #Run Script
 $Query = [string]$(Get-Content -Path:"$PSScriptRoot\..\SQL\CreateEnvironment.sql" -Raw)
 Invoke-SQLQuery -Server:"$($Identity.ToLower()).database.windows.net" -Database:$SQLDatabase -Query:$Query -AADToken:$SPNToken
+
+#Create a Storage Account
+Write-Information -MessageData:"Creating the $StorageAccountName storage account."
+az storage account create --resource-group $Identity --name $StorageAccountName --access-tier "Cool" --sku "Standard_LRS" --kind "StorageV2" --https-only $true | Out-Null
+
+#Create Function App
+Write-Information -MessageData:"Creating the $Identity function app"
+az functionapp create --name $Identity --resource-group $Identity --consumption-plan-location $Location --storage-account $StorageAccountName --runtime "dotnet" | Out-Null
+
+#Get the Function App Azure AD Identity
+Write-Information -MessageData:"Assigning the $Identity function app identity."
+$identityJson = az webapp identity assign --name $Identity --resource-group $Identity | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+
+#Create SQL General Users AD Group
+$sqlAccessGroup = az ad group list --display-name $SQLGeneralUserGroup | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json | Select-Object -First 1
+if (-not $SQLAccessGroup) {
+    Write-Information -MessageData:"Creating the $($SQLGeneralUserGroup) group."
+    $sqlAccessGroup = az ad group create --display-name $SQLGeneralUserGroup --mail-nickname $SQLGeneralUserGroup | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+}
+
+#Add Function App Identity to AD Group.
+$memberExistsInGroup = az ad group member check --group "$($SqlAccessGroup.objectId)" --member-id "$($identityJson.principalId)" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+if (-not $memberExistsInGroup.value) {
+    Write-Information -MessageData:"Adding Member the $($Identity) to group $($SqlAccessGroup.displayName)."
+    az ad group member add --group "$($SqlAccessGroup.objectId)" --member-id "$($identityJson.principalId)" | Out-Null
+} 
+
+#This has to be done with an actual AD account get current user token, current user is in the Admin Group.
+$SPNADToken = az account get-access-token --resource https://database.windows.net/ | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+
+Write-Information -Message:"Setting the $SQLDatabase AD Group access."
+#Update Query to the name of the AD Group.
+$Query = [string]$(Get-Content -Path:"$PSScriptRoot\..\SQL\GiveAccess.sql" -Raw)  
+$Query = $Query -replace '<UserName>', $SQLGeneralUserGroup
+
+#Run Script
+Invoke-SQLQuery -Server:"$($Identity.ToLower()).database.windows.net" -DatabaseName:$SQLDatabase -Query:$Query -AADToken:$($SPNADToken.accessToken)
+
+
+#Deploy Azure Function
+$Environment = @{
+    Name              = $Identity
+    ResourceGroup     = $Identity
+    Location          = $location
+    DeploymentPackage = "$PSScriptRoot\Secrets\FunctionApp1.zip"
+    AppSettings       = @{
+        FUNCTIONS_EXTENSION_VERSION               = "~1"
+    }
+    ConnectionStrings = @(
+        [pscustomobject] @{
+            Name  = "SQLConnectionString"
+            Value = "Data Source=$($Parameters.Name.ToLower()).database.windows.net;Initial Catalog=$($SQLDatabase)"
+            Type  = "SQLAzure"
+        })
+    AllowedOrigins    = @("https://" + $SharePoint)
+}
+
+dotnet build "$PSScriptRoot\FunctionApp1\FunctionApp1.sln" --configuration Release
+Write-Verbose -Message:"Creating the $($Environment.Name) Azure Function App deployment package"
+Compress-Archive -Path:"$PSScriptRoot\FunctionApp1\FunctionApp1\bin\release\net461\*" `
+    -DestinationPath:$Environment.DeploymentPackage `
+    -Force
+
+Set-AzureFuncionApp @Environment -Verbose:$VerbosePreference
 
 Write-Output $SQLAppPassword
