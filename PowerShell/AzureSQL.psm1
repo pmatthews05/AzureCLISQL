@@ -28,21 +28,40 @@ function Get-AADToken {
         [string]$resourceAppIdURI
     )
     Try {
-        $PNPModule = Get-Module -ListAvailable -Name SharePointPnPPowerShellOnline | Select-Object -First 1
+        Write-Information -MessageData "Getting PNP Info"
+        $PNPModule = Get-Module -ListAvailable SharePointPnPPowerShellOnline -Refresh | Select-Object -First 1
+        
+        Write-Information -MessageData "Module Location: $($PNPModule.ModuleBase)"
+
         $adal = Join-Path $PNPModule.ModuleBase Microsoft.IdentityModel.Clients.ActiveDirectory.dll
+        Write-Information -MessageData $adal
+
         [System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
+        Write-Information -MessageData "Getting authority Info"
         # Set Authority to Azure AD Tenant
         $authority = 'https://login.windows.net/' + $TenantId        
         $ClientCred = [Microsoft.IdentityModel.Clients.ActiveDirectory.ClientCredential]::new($ServicePrincipalId, $ServicePrincipalPwd)
         $authContext = [Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext]::new($authority)
+        
+        Write-Information -MessageData "Getting authResult"
         $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $ClientCred)
-        $Token = $authResult.Result.AccessToken
+        
+        if ($authResult) {
+            if ($authResult.Exception.InnerException.Message) {
+                Write-Error -Message $authResult.Exception.InnerException.Message
+            }
+            else {
+                $Token = $authResult.Result.AccessToken    
+                Write-Output $Token
+            }
+        }
     }
     Catch {
-        Write-Error -Message $ErrorMessage
-        Throw $_
+        Write-Information -MessageData "Found an error"
+        Write-Error -Message $_.Exception.Message
+        Throw $_.Exception
     }
-    Write-Output $Token
+    
 }
 
 function Invoke-SQLQuery {

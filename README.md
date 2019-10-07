@@ -39,5 +39,6 @@ For the project you will need a secret.json file. Create a Folder called '<b>Sec
 ### Run Script.
 This will install 
 ```Powershell
-.\Powershell\Install-SQL.ps1 -path:.\Secrets\secret.json
+cd .\Powershell
+.\Install-SQL.ps1 -path:..\Secrets\secret.json
 ```

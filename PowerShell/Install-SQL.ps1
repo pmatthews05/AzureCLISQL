@@ -22,6 +22,7 @@ $SQLAdminPassword = "$($Parameters.SQLDatabase.Password)"
 $SQLDatabase = "$($Parameters.SQLDatabase.DatabaseName)"
 $SQLAdminAppPrincipalName = "$($Parameters.SQLDatabase.SQLAdminAppPrincipalName)"
 $SQLAdminADGroup = "$($Parameters.SQLDatabase.SQLAdminADGroup)"
+$SQLGeneralUserGroup = "$($Parameters.SQLDatabase.SQLDBAccessGroup)"
 $location = "uksouth"
 Write-Information -MessageData:"Log into the Azure Tenancy"
 az login
@@ -31,19 +32,12 @@ az configure --defaults location=$location
 Write-Information -MessageData:"Creating the $Identity resource group."
 az group create --name $Identity | Out-Null
 
-#Create a Storage Account
-Write-Information -MessageData:"Creating the $StorageAccountName storage account."
-az storage account create --resource-group $Identity --name $StorageAccountName --access-tier "Cool" --sku "Standard_LRS" --kind "StorageV2" --https-only $true | Out-Null
-
-
-
-
 #SQL Admin User Principal Account
 Write-Information -MessageData:"Getting the $SQLAdminAppPrincipalName Service Principal registration."
 $SqlSPRegistration = az ad sp list --all --query "[?displayName == '$SQLAdminAppPrincipalName']" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json | Select-Object -First 1
 if (-not $SqlSPRegistration) {
     Write-Information -MessageData:"Creating the $SQLAdminAppPrincipalName SP Registration."
-    az ad sp create-for-rbac --name "http://$SQLAdminAppPrincipalName" | Out-Null
+    az ad sp create-for-rbac --name "http://$SQLAdminAppPrincipalName" --skip-assignment | Out-Null
     $SqlSPRegistration = az ad sp list --all --query "[?displayName == '$SQLAdminAppPrincipalName']" | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json | Select-Object -First 1
 }
 
@@ -114,6 +108,9 @@ $SPNToken = Get-AADToken -TenantID $subscription.tenantId -ServicePrincipalId $S
 $Query = [string]$(Get-Content -Path:"$PSScriptRoot\..\SQL\CreateEnvironment.sql" -Raw)
 Invoke-SQLQuery -Server:"$($Identity.ToLower()).database.windows.net" -Database:$SQLDatabase -Query:$Query -AADToken:$SPNToken
 
+#Get Storage Account Name
+$StorageAccountName = ConvertTo-StorageAccountName -Name:$Identity
+
 #Create a Storage Account
 Write-Information -MessageData:"Creating the $StorageAccountName storage account."
 az storage account create --resource-group $Identity --name $StorageAccountName --access-tier "Cool" --sku "Standard_LRS" --kind "StorageV2" --https-only $true | Out-Null
@@ -157,7 +154,7 @@ $Environment = @{
     Name              = $Identity
     ResourceGroup     = $Identity
     Location          = $location
-    DeploymentPackage = "$PSScriptRoot\Secrets\FunctionApp1.zip"
+    DeploymentPackage = "$PSScriptRoot\..\Secrets\FunctionApp1.zip"
     AppSettings       = @{
         FUNCTIONS_EXTENSION_VERSION               = "~1"
     }
@@ -170,9 +167,9 @@ $Environment = @{
     AllowedOrigins    = @("https://" + $SharePoint)
 }
 
-dotnet build "$PSScriptRoot\FunctionApp1\FunctionApp1.sln" --configuration Release
-Write-Verbose -Message:"Creating the $($Environment.Name) Azure Function App deployment package"
-Compress-Archive -Path:"$PSScriptRoot\FunctionApp1\FunctionApp1\bin\release\net461\*" `
+dotnet build "$PSScriptRoot\..\FunctionApp1\FunctionApp1.sln" --configuration Release
+Write-Information -MessageData:"Creating the $($Environment.Name) Azure Function App deployment package"
+Compress-Archive -Path:"$PSScriptRoot\..\FunctionApp1\FunctionApp1\bin\release\net461\*" `
     -DestinationPath:$Environment.DeploymentPackage `
     -Force
 
