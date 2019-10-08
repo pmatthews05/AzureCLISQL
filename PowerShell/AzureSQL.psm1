@@ -41,17 +41,22 @@ function Get-AADToken {
         # Set Authority to Azure AD Tenant
         $authority = 'https://login.windows.net/' + $TenantId        
         $ClientCred = [Microsoft.IdentityModel.Clients.ActiveDirectory.ClientCredential]::new($ServicePrincipalId, $ServicePrincipalPwd)
-        $authContext = [Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext]::new($authority)
-        
+        $authContext = [Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext]::new($authority, $null)
+        Write-Information -MessageData "$($authContext.TokenCache)"
         Write-Information -MessageData "Getting authResult"
-        $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $ClientCred)
+        $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $ClientCred).GetAwaiter().GetResult()
         
         if ($authResult) {
+            Write-Information -MessageData:"Found an AuthResult"
+            Write-Information -MessageData:$authResult
             if ($authResult.Exception.InnerException.Message) {
+                Write-Information -MessageData:"Found an Exception"
+                Write-Information -MessageData: $authResult.Exception.InnerException.Message
                 Write-Error -Message $authResult.Exception.InnerException.Message
             }
             else {
-                $Token = $authResult.Result.AccessToken    
+                Write-Information -MessageData:"Getting the Access Token value."
+                $Token = $authResult.AccessToken    
                 Write-Output $Token
             }
         }
@@ -61,7 +66,6 @@ function Get-AADToken {
         Write-Error -Message $_.Exception.Message
         Throw $_.Exception
     }
-    
 }
 
 function Invoke-SQLQuery {
@@ -73,18 +77,49 @@ function Invoke-SQLQuery {
         [Parameter(Mandatory)]
         [string]$Query,
         [Parameter(Mandatory)]
-        [string]$AADToken
+        [string]$AADToken,
+
+        [int]$retryCount = 5,
+        [int]$delaySeconds = 1
     )
 
     $conn = New-Object System.Data.SqlClient.SQLConnection
     $conn.ConnectionString = "Data Source=$Server;Initial Catalog=$DatabaseName;Connect Timeout=30"
     $conn.AccessToken = $($AADToken)
     
-    $conn.Open()
-    $command = New-Object -TypeName System.Data.SqlClient.SqlCommand($Query, $conn)
-    $command.ExecuteNonQuery()
-    $conn.Close()
-}
+    $retryAfterInterval = 0;
+    $retryAttempts = 0;
+    $backoffInterval = $delaySeconds;
+
+    [int[]]$TransientErrorNumbers = 4060,40197,40501,40613,49918,49919,49920,11001
+
+    while ($retryAttempts -lt $retryCount) {
+        try{
+            $conn.Open()
+            $command = New-Object -TypeName System.Data.SqlClient.SqlCommand($Query, $conn)
+            $command.ExecuteNonQuery()
+            $conn.Close()
+            break;
+        }
+        Catch [System.Data.SqlClient.SqlException] {
+            if($TransientErrorNumbers.Contains($_.Exception.Number))
+            {
+                Write-Information -MessageData:"$($_.Exception.Number): transient occurred."
+                $retryAfterInterval = $backoffInterval
+                Start-Sleep -Seconds:$delaySeconds
+                $retryAttempts++
+                $backoffInterval *= 2
+            }else
+            {
+               Write-Error -Message $_.Exception.Message    
+            }
+        }
+        Catch{
+            Write-Error -Message $_.Exception.Message
+        }
+    }
+} 
+
 function ConvertTo-StorageAccountName {
     param(
         # The generic name to use for all related assets

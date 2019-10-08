@@ -43,8 +43,9 @@ if (-not $SqlSPRegistration) {
 
 #Create a password for SQL Principal.
 Write-Information -MessageData:"Setting the $SQLAdminAppPrincipalName SP registration client secret."
-$SQLAppPassword  = [System.Web.Security.Membership]::GeneratePassword(20,5)
-$SqlAppPermission = az ad sp credential reset --name $SqlSPRegistration.AppId --password "$(ConvertTo-EscapedString -String:$SQLAppPassword)" --end-date '2299-12-31T00:00:00' | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
+$SQLAppPassword = [System.Web.Security.Membership]::GeneratePassword(25,5)
+$ConvertedSPPassword = ConvertTo-EscapedString -String:$SQLAppPassword
+$SqlAppPermission = az ad sp credential reset --name $SqlSPRegistration.AppId --password "$ConvertedSPPassword" --end-date '2299-12-31T00:00:00' | ForEach-Object { $PSItem -join '' } | ConvertFrom-Json
 
 
 #Can only assign AZ AD Groups, by being logged in as a AD User Admin
